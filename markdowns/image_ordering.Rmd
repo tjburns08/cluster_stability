@@ -16,7 +16,7 @@ Here, we are going to implement image comparisons with Magick. Let's start with 
 library(tidyverse)
 library(here)
 library(magick)
-out_dir <- "im_50_cl_30"
+out_dir <- "im_50_cl_40"
 
 setwd(here::here('output', out_dir))
 

@@ -94,14 +94,14 @@ Next, we cluster and plot. But many many times.
 ```{r}
 library(FlowSOM)
 
-setwd(here::here("output", "im_50_cl_30"))
+setwd(here::here("output", "im_50_cl_40"))
 
 num_iter <- 50
 
 for(i in seq(num_iter)) {
   input <- FlowSOM::ReadInput(as.matrix(surface))
   som <- FlowSOM::BuildSOM(input)
-  mc <- FlowSOM::metaClustering_consensus(som$map$codes, k = 30)
+  mc <- FlowSOM::metaClustering_consensus(som$map$codes, k = 40)
   mc_cells <- FlowSOM::GetMetaclusters(som, mc)
   
   clust <- unique(mc)
