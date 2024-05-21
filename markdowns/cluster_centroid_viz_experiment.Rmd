@@ -1,0 +1,153 @@
+---
+title: "Cluster centroid viz experiment"
+output: html_document
+date: "2024-05-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In this markdown, we will visualize the centroids of a given cluster, and see if this is an appropriate way to look at how the clusters shift around. Let's get started.
+
+```{r get_data}
+library(tidyverse)
+library(here)
+library(flowCore)
+library(sleepwalk)
+set.seed(1)
+
+setwd(here::here('data'))
+
+# Read in the cells
+cells <- flowCore::read.FCS(list.files(pattern = "SLE")) # Data from Marie Burns
+params <- as.vector(Biobase::pData(parameters(cells))$desc)
+colnames(cells) <- params
+cells <- exprs(cells) 
+cells <- cells[,!is.na(colnames(cells))]
+cells <- as_tibble(cells)
+
+# Filter the cells by marker we're going to use
+marker_info <- readr::read_csv("cytof_marker_data.csv")
+marker_info <- dplyr::filter(marker_info, is.na(notes)) # Take this out later
+
+# Tranform the markers we want to transform
+to_transform <- dplyr::filter(marker_info, marker_type != "none")$desc
+keep_same <- dplyr::filter(marker_info, marker_type == "none")$desc %>% .[!is.na(.)]
+
+tmp1 <- cells[,to_transform]
+tmp2 <- cells[,keep_same]
+
+tmp1 <- asinh(tmp1/5)
+cells <- bind_cols(tmp1, tmp2)
+```
+
+```{r}
+surface <- cells[,dplyr::filter(marker_info, marker_type == "type")$desc] %>% 
+  as_tibble()
+
+surface
+```
+
+```{r}
+NumberDuplicates <- function(x) {
+  # Count occurrences and make adjustments if necessary
+  ux <- unique(x)
+  for (i in ux) {
+    # Indices of each unique string
+    indices <- which(x == i)
+    if (length(indices) > 1) {
+      # Modify elements at those indices
+      x[indices] <- paste0(i, seq_along(indices))
+    }
+  }
+  return(x)
+}
+
+# Make the naming easier
+names(surface) <- sub(".*_", "", names(surface)) %>% NumberDuplicates()
+names(surface)
+```
+We gate and sample.
+
+```{r}
+# Mononuclear gate
+surface <- dplyr::filter(surface, CD45 > 3 & CD66b < 2)
+
+# Subsample
+num_cells <- 10000
+surface <- surface[sample(nrow(surface), num_cells),]
+surface
+```
+
+
+And now we cluster.
+
+```{r}
+library(FlowSOM)
+
+input <- FlowSOM::ReadInput(as.matrix(surface))
+som <- FlowSOM::BuildSOM(input)
+mc <- FlowSOM::metaClustering_consensus(som$map$codes, k = 30)
+mc_cells <- FlowSOM::GetMetaclusters(som, mc)
+```
+
+And now we see how to pull out or compute the cluster centroids. Does FlowSOM give us this out of the box? It looks like we will have to compute them ourselves. How do we do that? 
+
+Two options:
+- Calculate the centroids in the original manifold, make them into rows, run the UMAP on them.
+- Calculate the centroids directly on the UMAP.
+
+Both ways use the following method:
+- Calculate the mean value of each coordinate.
+
+Given that this is a visualization exercise, we are going to calculate them directly on the UMAP. First, we need to make the UMAP.
+
+```{r run_dimr}
+library(umap)
+
+umap <- umap::umap(surface, preserve.seed = FALSE)$layout %>% as_tibble()
+names(umap) <- c("umap1", "umap2")
+```
+
+Great. Now let's go ahead and plot what we've got.
+
+```{r}
+toplot <- bind_cols(umap, cluster = mc_cells)
+ggplot(toplot, aes(x = umap1, y = umap2, color = as.factor(cluster))) + geom_point()
+```
+
+Looks fine. Now it's centroid compute time.
+
+```{r}
+clust <- unique(mc)
+
+clust_cent <- lapply(clust, function(i) {
+  result <- dplyr::filter(toplot, mc_cells == i) %>% apply(., 2, median)
+  return(result)
+}) %>% do.call(rbind, .) %>% as_tibble()
+```
+
+And now we plot it.
+
+```{r}
+ggplot(clust_cent, aes(x = umap1, y = umap2)) + geom_point()
+```
+
+Ok, now the big challenge: is there somehow a way I can superimpose one plot on top of another. I want the cluster centroids to be real big with a backdrop of a UMAP in the background. This will be the gif. It looks like we can superimpose the plots directly in the command. Let's try that.
+
+```{r}
+ggplot() + 
+  geom_point(data = toplot, aes(x = umap1, y = umap2), color = "black", alpha = 0.9) +
+  geom_point(data = clust_cent, aes(x = umap1, y = umap2), color = "yellow", size = 2)
+```
+
+Ok, this will do! Now its time to run this a bunch of times in a loop, make the gif, and order by similarity.
+
+But first, just as a simple sanity check we color by Cluster ID.
+
+```{r}
+ggplot() + 
+  geom_point(data = toplot, aes(x = umap1, y = umap2), color = as.factor(toplot$cluster)) +
+  geom_point(data = clust_cent, aes(x = umap1, y = umap2), color = "yellow", size = 2)
+```

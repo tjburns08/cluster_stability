@@ -1,0 +1,311 @@
+---
+title: "Cluster boundary visualization experiment"
+output: html_document
+date: "2024-05-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In this markdown, we are going to determine whether our cluster boundary visualization method actually works. Let's load, process, and cluster the data accordingly. We are going to use FlowSOM, given its popularity in the CyTOF field, and its fixed number of clusters.
+
+First we read in the data. The following block of code can be tracked to the knn_sleepwalk project.
+
+```{r get_data}
+library(tidyverse)
+library(here)
+library(flowCore)
+library(sleepwalk)
+set.seed(1)
+
+setwd(here::here('data'))
+
+# Read in the cells
+cells <- flowCore::read.FCS(list.files(pattern = "SLE")) # Data from Marie Burns
+params <- as.vector(Biobase::pData(parameters(cells))$desc)
+colnames(cells) <- params
+cells <- exprs(cells) 
+cells <- cells[,!is.na(colnames(cells))]
+cells <- as_tibble(cells)
+
+# Filter the cells by marker we're going to use
+marker_info <- readr::read_csv("cytof_marker_data.csv")
+marker_info <- dplyr::filter(marker_info, is.na(notes)) # Take this out later
+
+# Subsample
+num_cells <- 100000
+cells <- cells[sample(nrow(cells), num_cells),]
+cells
+
+# Tranform the markers we want to transform
+to_transform <- dplyr::filter(marker_info, marker_type != "none")$desc
+keep_same <- dplyr::filter(marker_info, marker_type == "none")$desc %>% .[!is.na(.)]
+
+tmp1 <- cells[,to_transform]
+tmp2 <- cells[,keep_same]
+
+tmp1 <- asinh(tmp1/5)
+cells <- bind_cols(tmp1, tmp2)
+```
+
+And a bit of custom tidying for the rest of the pipeline.
+
+```{r}
+surface <- cells[,dplyr::filter(marker_info, marker_type == "type")$desc] %>% 
+  as_tibble()
+
+surface
+```
+
+```{r}
+NumberDuplicates <- function(x) {
+  # Count occurrences and make adjustments if necessary
+  ux <- unique(x)
+  for (i in ux) {
+    # Indices of each unique string
+    indices <- which(x == i)
+    if (length(indices) > 1) {
+      # Modify elements at those indices
+      x[indices] <- paste0(i, seq_along(indices))
+    }
+  }
+  return(x)
+}
+
+# Make the naming easier
+names(surface) <- sub(".*_", "", names(surface)) %>% NumberDuplicates()
+names(surface)
+```
+
+And now we cluster the data with FlowSOM.
+
+```{r}
+library(FlowSOM)
+
+input <- FlowSOM::ReadInput(as.matrix(surface))
+som <- FlowSOM::BuildSOM(input)
+mc <- FlowSOM::metaClustering_consensus(som$map$codes, k = 20)
+mc_cells <- FlowSOM::GetMetaclusters(som, mc)
+```
+
+And then we run our UMAP.
+
+```{r run_dimr}
+library(umap)
+
+umap <- umap::umap(surface, preserve.seed = FALSE)$layout %>% as_tibble()
+names(umap) <- c("umap1", "umap2")
+```
+
+And now for the new stuff. We need to find each cell's k-nearest neighborhood, and then we need to determine the cluster ID percentages within each neighborhood.
+
+```{r}
+library(RANN)
+
+nn <- RANN::nn2(surface, k = 10)$nn.idx
+nn[1:10, 1:10]
+```
+
+Output is cell ID as column 1, and the KNN ID for the columns. We note that the original ID is included in the k. So a k of 100 is the cell of interest and its 99 nearest neighbors. Fine by me. Now we get the cluster ID for a given cell.
+
+```{r}
+mc_cells[nn[1,]][1:10]
+```
+
+And now we get the percentage of belonging to a particular cluster, for that cell. 
+
+```{r}
+pct <- mc_cells[nn[1,]] %>% table()
+
+# This is the quick solution to dealing with more than 2 clusters per neighborhood, but we don't know how robust it will be
+perfect_split <- 1/length(pct) # 0.5 if 2, 0.33 if 3
+
+pct <- pct/sum(pct)
+pct <- abs(perfect_split - min(pct))
+pct
+```
+
+Ok, and now we scale this so we get a vector of percentages that we can color our UMAP by.
+
+```{r}
+pct_percell <- lapply(seq(nrow(cells)), function(i) {
+  curr_pct <- mc_cells[nn[i,]] %>% table()
+  perfect_split <- 1/length(curr_pct)
+  
+  curr_pct <- curr_pct/sum(curr_pct)
+  curr_pct <- abs(perfect_split - min(curr_pct))
+  return(curr_pct)
+}) %>% unlist()
+```
+
+Great. And now we are going to color the UMAP by this, without any threshold, and see if we get boundaries. But first let's color the UMAP by the flowSOM cluster IDs.
+
+```{r}
+toplot <- bind_cols(surface, umap, cluster = mc_cells, boundary = pct_percell)
+ggplot(toplot, aes(x = umap1, y = umap2, color = as.factor(cluster))) + geom_point()
+```
+
+So we see that the boundaries could be a bit messy because we didn't cluster directly on the UMAP (which we didn't intend to do anyway).
+
+```{r}
+ggplot(toplot, aes(x = umap1, y = umap2, color = boundary)) + geom_point()
+```
+
+Ok, not the prettiest. But the first big observation is that the boundaries between clusters, at least as visualized on the UMAP, are fuzzier than perhaps we appreciate. Now let's threshold it.
+
+```{r}
+pct_percell_thr <- ifelse(pct_percell > 0.01, 1, 0)
+toplot$boundary_thr <- pct_percell_thr
+
+ggplot(toplot, aes(x = umap1, y = umap2, color = boundary_thr)) + geom_point()
+```
+
+Again, fuzzy boundaries. Even if we crank up the total number of cells. Our control of course is going to be clustering directly on the UMAP, which we will do next.
+
+```{r}
+library(FlowSOM)
+
+input_umap <- FlowSOM::ReadInput(as.matrix(umap))
+som_umap <- FlowSOM::BuildSOM(input)
+mc_umap <- FlowSOM::metaClustering_consensus(som$map$codes, k = 20)
+mc_cells_umap <- FlowSOM::GetMetaclusters(som_umap, mc_umap)
+```
+And now for KNN again.
+
+```{r}
+library(RANN)
+
+nn_umap <- RANN::nn2(umap, k = 10)$nn.idx
+nn_umap[1:10, 1:10]
+```
+And now for the percent percell algorithm.
+
+```{r}
+pct_percell_umap <- lapply(seq(nrow(umap)), function(i) {
+  curr_pct <- mc_cells_umap[nn_umap[i,]] %>% table()
+  perfect_split <- 1/length(curr_pct)
+  
+  curr_pct <- curr_pct/sum(curr_pct)
+  curr_pct <- abs(perfect_split - min(curr_pct))
+  return(curr_pct)
+}) %>% unlist()
+```
+
+And finally the plots.
+
+```{r}
+toplot <- bind_cols(umap, cluster = mc_cells_umap, boundary = pct_percell_umap)
+ggplot(toplot, aes(x = umap1, y = umap2, color = as.factor(cluster))) + geom_point()
+```
+
+And...what we find is that FlowSOM does not do so well directly on the UMAP. So let's try something else. We're going to color the UMAP with the original clusters by the KNN made directly on the UMAP.
+
+```{r}
+pct_percell_umap <- lapply(seq(nrow(umap)), function(i) {
+  curr_pct <- mc_cells[nn_umap[i,]] %>% table()
+  perfect_split <- 1/length(curr_pct)
+  
+  curr_pct <- curr_pct/sum(curr_pct)
+  curr_pct <- abs(perfect_split - min(curr_pct))
+  return(curr_pct)
+}) %>% unlist()
+```
+
+And now we plot. A repeat for reference.
+
+```{r}
+toplot <- bind_cols(umap, cluster = mc_cells, boundary = pct_percell_umap)
+ggplot(toplot, aes(x = umap1, y = umap2, color = as.factor(cluster))) + geom_point()
+```
+
+Followed by the KNN visualizations.
+
+```{r}
+ggplot(toplot, aes(x = umap1, y = umap2, color = pct_percell_umap)) + geom_point()
+```
+
+And finally with our thresholds in place.
+
+```{r}
+pct_percell_umap_thr <- ifelse(pct_percell_umap > 0.01, 1, 0)
+toplot$boundary_thr <- pct_percell_umap_thr
+
+ggplot(toplot, aes(x = umap1, y = umap2, color = boundary_thr)) + geom_point()
+```
+
+Ok, so the boundaries are a bit better. For the sake of visualization and for the question we ask about shifting boundaries, this will do. We want to know how the visualization changes rather than the actual clusters. Now one option is to get really stringent by setting the K to 2, and just say if the neighbor is a different cluster, then we're on a boundary. Let's try that real quick.
+
+```{r}
+library(RANN)
+
+nn_umap <- RANN::nn2(umap, k = 2)$nn.idx
+nn_umap[1:10, 1:2]
+```
+
+And we'll now have a binary boundary condition.
+
+```{r}
+bin_boundary <- lapply(seq(nrow(umap)), function(i) {
+  curr <- mc_cells[nn_umap[i,]] %>% table()
+  if(length(curr) > 1) {
+    return(1)
+  }
+  return(0)
+}) %>% unlist()
+```
+
+And now we have a look
+
+```{r}
+toplot$bin_boundary <- bin_boundary
+ggplot(toplot, aes(x = umap1, y = umap2, color = bin_boundary)) + geom_point()
+```
+
+Still messy. But maybe because the nonboundary cells get in the way. So let's strip them away.
+
+```{r}
+toplot_sub <- dplyr::filter(toplot, bin_boundary == 1)
+ggplot(toplot_sub, aes(x = umap1, y = umap2, color = bin_boundary)) + geom_point()
+```
+
+Ok, let's flip back to the previous visualization and see what happens when we do it like this.
+
+```{r}
+ggplot(toplot[toplot$boundary >= 0.1,], aes(x = umap1, y = umap2, color = boundary)) + geom_point()
+```
+
+Ok, so what are we learning? The boundaries are fuzzy. Perhaps we need some sort of density estimator to better delineate the boundaries of the cluster. But there's a shortcut here. We subsample to a small number of cells.
+
+```{r}
+toplot_sub <- toplot[sample(nrow(toplot), 5000),]
+
+ggplot(toplot_sub[toplot_sub$boundary >= 0.1,], aes(x = umap1, y = umap2, color = boundary)) + geom_point()
+```
+
+Boundaries are still fairly thick as viewed here. So it does not appear like we are going to get particularly visualizable boundaries.
+
+Let's go the opposite way real quick.
+
+```{r}
+ggplot(toplot[toplot$boundary == 0,], aes(x = umap1, y = umap2, color = boundary)) + geom_point()
+```
+
+Can't really see the boundaries. We subset.
+
+```{r}
+ggplot(toplot_sub[toplot_sub$boundary == 0,], aes(x = umap1, y = umap2, color = boundary)) + geom_point()
+```
+
+We can see them a little bit better. Ok, so we're getting somewhere at least. Cool. 
+
+But again, this is not so much dunking on the clustering tool as much as it speaks to the visualization of the clusters themsleves. Pairs very well with KNN sleepwalk.
+
+So there are a lot of directions I could go here. The original vision was to make a gif of shifting cluster boundaries. We could still do that. But its clear that this is harder than I previously thought (and so it is for every project I do pretty much). 
+
+So let's figure out what we're going to do.
+
+Another option is to go with the cluster centroid rather than the cluster boundary. This is something we could visualize on UMAP and easily (relatively speaking) show how they shift. This sounds like a good way to go about it. We could do things like color the centroid by the number of cells associated with the cluster and that kind of thing. Let's try it and see what we see.
+
+Let's change the name of this project to cluster_stability.
+

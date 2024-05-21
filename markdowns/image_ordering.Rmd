@@ -1,0 +1,104 @@
+---
+title: "Image ordering"
+output: html_document
+date: "2023-02-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This markdown was originally made in the dimr_bootstrap project. It's a clever way to order images by similarity to make the gif we're trying to produce a bit cleaner.
+
+Here, we are going to implement image comparisons with Magick. Let's start with two images and see if we can get some sort of value.
+
+```{r}
+library(tidyverse)
+library(here)
+library(magick)
+out_dir <- "im_50_cl_30"
+
+setwd(here::here('output', out_dir))
+
+im1 <- magick::image_read('plot1.png')
+im2 <- magick::image_read('plot2.png')
+
+magick::image_compare_dist(image = im1, reference_image = im1, metric = 'RMSE')
+magick::image_compare_dist(image = im1, reference_image = im2, metric = 'RMSE')
+
+magick::metric_types()
+```
+Now we're going to make a similarity matrix. Note that we make the image data much smaller. 
+
+```{r}
+setwd(here::here('output', out_dir))
+files <- list.files()
+
+ImageDistance <- function(im1, im2, metric = "MSE") {
+    return(magick::image_compare_dist(image = im1, reference_image = im2, metric = 'RMSE')$distortion)
+}
+
+files <- list.files()
+
+# Create a list to store the images, make them smaller
+images <- lapply(files, function(i) {
+    result <- image_read(i) %>% image_scale('10%')
+})
+
+# Create an empty matrix to store the distances
+n <- length(files)
+distances <- matrix(0, nrow = n, ncol = n)
+
+# Calculate the pairwise distances between the rows of the matrix
+#count <- 0
+for (i in 1:n) {
+  #count <- count + 1
+  #print(count)
+  for (j in 1:n) {
+    distances[i, j] <- ImageDistance(images[[i]], images[[j]])
+  }
+}
+
+rownames(distances) <- colnames(distances) <- files
+```
+
+Now let's visualize as a heatmap.
+
+```{r}
+library(pheatmap)
+ph <- pheatmap::pheatmap(distances)
+```
+```{r}
+setwd(here::here('output', out_dir))
+files <- list.files()
+new_order <- files[ph$tree_row$order]
+#new_order <- sort(distances[1,]) %>% names()
+new_order <- paste0(getwd(), "/", new_order)
+```
+
+Now we make the gif based on that new order.
+
+```{r}
+MakeGif <- function(outfile, fps = 5) {
+    ## list file names and read in
+    imgs <- new_order
+    img_list <- lapply(imgs, function(i) {
+        magick::image_read(i) %>% magick::image_scale('50%')
+    })
+
+    ## join the images together
+    img_joined <- image_join(img_list)
+
+    ## animate at 2 frames per second
+    img_animated <- image_animate(img_joined, fps)
+
+    ## save to disk
+    image_write(image = img_animated,
+            path = outfile)
+}
+
+MakeGif(outfile = here::here("output", out_dir, "ordered_images.gif"), fps = 10)
+```
+
+
+

@@ -1,0 +1,128 @@
+---
+title: "Cluster centroid with bootstrap"
+output: html_document
+date: "2024-05-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In this markdown, we are going to scale up what we came up with in cluster_centroid_viz_experiment. Specifically, we are going to run the UMAP once, and run the clustering many times. We will get the centroids, make the plots, and save them.
+
+First, we run through the usual of getting and preprocessing the data:
+
+```{r get_data}
+library(tidyverse)
+library(here)
+library(flowCore)
+library(sleepwalk)
+set.seed(1)
+
+setwd(here::here('data'))
+
+# Read in the cells
+cells <- flowCore::read.FCS(list.files(pattern = "SLE")) # Data from Marie Burns
+params <- as.vector(Biobase::pData(parameters(cells))$desc)
+colnames(cells) <- params
+cells <- exprs(cells) 
+cells <- cells[,!is.na(colnames(cells))]
+cells <- as_tibble(cells)
+
+# Filter the cells by marker we're going to use
+marker_info <- readr::read_csv("cytof_marker_data.csv")
+marker_info <- dplyr::filter(marker_info, is.na(notes)) # Take this out later
+
+# Tranform the markers we want to transform
+to_transform <- dplyr::filter(marker_info, marker_type != "none")$desc
+keep_same <- dplyr::filter(marker_info, marker_type == "none")$desc %>% .[!is.na(.)]
+
+tmp1 <- cells[,to_transform]
+tmp2 <- cells[,keep_same]
+
+tmp1 <- asinh(tmp1/5)
+cells <- bind_cols(tmp1, tmp2)
+```
+```{r}
+surface <- cells[,dplyr::filter(marker_info, marker_type == "type")$desc] %>% 
+  as_tibble()
+
+surface
+```
+
+```{r}
+NumberDuplicates <- function(x) {
+  # Count occurrences and make adjustments if necessary
+  ux <- unique(x)
+  for (i in ux) {
+    # Indices of each unique string
+    indices <- which(x == i)
+    if (length(indices) > 1) {
+      # Modify elements at those indices
+      x[indices] <- paste0(i, seq_along(indices))
+    }
+  }
+  return(x)
+}
+
+# Make the naming easier
+names(surface) <- sub(".*_", "", names(surface)) %>% NumberDuplicates()
+names(surface)
+```
+
+```{r}
+# Mononuclear gate
+# surface <- dplyr::filter(surface, CD45 > 3 & CD66b < 2)
+
+# Subsample
+num_cells <- 30000
+surface <- surface[sample(nrow(surface), num_cells),]
+surface
+```
+
+Here's where it gets different. First we run the UMAP.
+
+```{r run_dimr}
+library(umap)
+
+umap <- umap::umap(surface, preserve.seed = FALSE)$layout %>% as_tibble()
+names(umap) <- c("umap1", "umap2")
+```
+
+Next, we cluster and plot. But many many times.
+
+```{r}
+library(FlowSOM)
+
+setwd(here::here("output", "im_50_cl_30"))
+
+num_iter <- 50
+
+for(i in seq(num_iter)) {
+  input <- FlowSOM::ReadInput(as.matrix(surface))
+  som <- FlowSOM::BuildSOM(input)
+  mc <- FlowSOM::metaClustering_consensus(som$map$codes, k = 30)
+  mc_cells <- FlowSOM::GetMetaclusters(som, mc)
+  
+  clust <- unique(mc)
+  
+  tmp <- bind_cols(umap, cluster = mc_cells)
+  
+  clust_cent <- lapply(clust, function(i) {
+    result <- dplyr::filter(tmp, mc_cells == i) %>% apply(., 2, median)
+    return(result)
+  }) %>% do.call(rbind, .) %>% as_tibble()
+  
+  ggplot() + 
+    geom_point(data = tmp, aes(x = umap1, y = umap2), color = "black", alpha = 0.9) +
+    geom_point(data = clust_cent, aes(x = umap1, y = umap2), color = "yellow", size = 3)
+  ggsave(paste0("plot", i, ".png"))
+}
+
+```
+
+
+
+
+
+
