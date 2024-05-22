@@ -151,3 +151,18 @@ ggplot() +
   geom_point(data = toplot, aes(x = umap1, y = umap2), color = as.factor(toplot$cluster)) +
   geom_point(data = clust_cent, aes(x = umap1, y = umap2), color = "yellow", size = 2)
 ```
+
+Let's find that "offshore" cluster by visualizing each cluster one by one. 
+
+```{r}
+for(i in seq(length(clust_cent$cluster))) {
+  tmp <- dplyr::filter(toplot, cluster == i)
+  tmp_cent <- dplyr::filter(clust_cent, clust == i)
+  p <- ggplot() + 
+  geom_point(data = tmp, aes(x = umap1, y = umap2), color = "black", alpha = 0.9) +
+  geom_point(data = tmp_cent, aes(x = umap1, y = umap2), color = "yellow", size = 2)
+  
+  print(p)
+}
+```
+

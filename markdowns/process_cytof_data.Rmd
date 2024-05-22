@@ -1,0 +1,90 @@
+---
+title: "Cluster centroid with bootstrap"
+output: html_document
+date: "2024-05-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This markdown processes CyTOF data, so we can simply load the processed data in every time.
+
+```{r get_data}
+library(tidyverse)
+library(here)
+library(flowCore)
+library(sleepwalk)
+set.seed(1)
+
+setwd(here::here('data'))
+
+# Read in the cells
+cells <- flowCore::read.FCS(list.files(pattern = "SLE")) # Data from Marie Burns
+params <- as.vector(Biobase::pData(parameters(cells))$desc)
+colnames(cells) <- params
+cells <- exprs(cells) 
+cells <- cells[,!is.na(colnames(cells))]
+cells <- as_tibble(cells)
+
+# Filter the cells by marker we're going to use
+marker_info <- readr::read_csv("cytof_marker_data.csv")
+marker_info <- dplyr::filter(marker_info, is.na(notes)) # Take this out later
+
+# Tranform the markers we want to transform
+to_transform <- dplyr::filter(marker_info, marker_type != "none")$desc
+keep_same <- dplyr::filter(marker_info, marker_type == "none")$desc %>% .[!is.na(.)]
+
+tmp1 <- cells[,to_transform]
+tmp2 <- cells[,keep_same]
+
+tmp1 <- asinh(tmp1/5)
+cells <- bind_cols(tmp1, tmp2)
+```
+```{r}
+surface <- cells[,dplyr::filter(marker_info, marker_type == "type")$desc] %>% 
+  as_tibble()
+
+surface
+```
+
+```{r}
+NumberDuplicates <- function(x) {
+  # Count occurrences and make adjustments if necessary
+  ux <- unique(x)
+  for (i in ux) {
+    # Indices of each unique string
+    indices <- which(x == i)
+    if (length(indices) > 1) {
+      # Modify elements at those indices
+      x[indices] <- paste0(i, seq_along(indices))
+    }
+  }
+  return(x)
+}
+
+# Make the naming easier
+names(surface) <- sub(".*_", "", names(surface)) %>% NumberDuplicates()
+names(surface)
+
+names(cells) <- sub(".*_", "", names(cells)) %>% NumberDuplicates()
+names(cells)
+```
+Now we output.
+
+```{r}
+setwd(here::here("data", "processed"))
+
+saveRDS(cells, "processed_cells.rds")
+saveRDS(surface, "processed_surface.rds")
+```
+
+
+
+
+
+
+
+
+
+
