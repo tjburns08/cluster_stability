@@ -1,0 +1,71 @@
+---
+title: "Cluster centroid with bootstrap v2"
+output: html_document
+date: "2024-05-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("functions.R")
+set.seed(1)
+```
+
+This markdown is the second version of the original code. We're going to group things together a bit more and set up phenograph as a clustering option.
+
+In this markdown, we are going to scale up what we came up with in cluster_centroid_viz_experiment. Specifically, we are going to run the UMAP once, and run the clustering many times. We will get the centroids, make the plots, and save them.
+
+Here, we don't have to process the data. We just jump right into it.
+
+```{r}
+library(tidyverse)
+library(here)
+
+setwd(here::here("data", "processed"))
+surface <- readr::read_rds("processed_surface.rds")
+```
+And we subsample.
+
+```{r}
+# Mononuclear gate
+# surface <- dplyr::filter(surface, CD45 > 3 & CD66b < 2)
+
+# Subsample
+num_cells <- 30000
+surface <- surface[sample(nrow(surface), num_cells),]
+surface
+```
+
+Here's where it gets different. First we run the UMAP.
+
+```{r run_dimr}
+library(umap)
+
+umap <- umap::umap(surface, preserve.seed = FALSE)$layout %>% as_tibble()
+names(umap) <- c("umap1", "umap2")
+```
+
+Next, we cluster and plot. But many many times. 
+
+```{r}
+setwd(here::here("output", "second_pass", "30k_cells"))
+num_iter <- 50
+num_mc <- 40 # For FlowSOM
+
+# PhenoGraph loop
+k_titration <- c(20, 30, 50, 70)
+
+for(i in k_titration) {
+  curr_dir <- paste0("im_50_pg_k_", i)
+  dir.create(curr_dir)
+  setwd(curr_dir)
+  MakePlots(dat = surface, num_iter = num_iter, num_mc = num_mc, method = "PhenoGraph", pg_k = i)
+  MakeGif(fps = 10)
+  setwd(here::here("output", "second_pass", "30k_cells"))
+}
+```
+
+
+
+
+
+

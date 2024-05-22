@@ -1,53 +1,7 @@
----
-title: "Cluster centroid with bootstrap v2"
-output: html_document
-date: "2024-05-21"
----
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
-
-This markdown is the second version of the original code. We're going to group things together a bit more and set up phenograph as a clustering option.
-
-In this markdown, we are going to scale up what we came up with in cluster_centroid_viz_experiment. Specifically, we are going to run the UMAP once, and run the clustering many times. We will get the centroids, make the plots, and save them.
-
-Here, we don't have to process the data. We just jump right into it.
-
-```{r}
-library(tidyverse)
-library(here)
-
-setwd(here::here("data", "processed"))
-surface <- readr::read_rds("processed_surface.rds")
-```
-And we subsample.
-
-```{r}
-# Mononuclear gate
-# surface <- dplyr::filter(surface, CD45 > 3 & CD66b < 2)
-
-# Subsample
-num_cells <- 1000
-surface <- surface[sample(nrow(surface), num_cells),]
-surface
-```
-
-Here's where it gets different. First we run the UMAP.
-
-```{r run_dimr}
-library(umap)
-
-umap <- umap::umap(surface, preserve.seed = FALSE)$layout %>% as_tibble()
-names(umap) <- c("umap1", "umap2")
-```
-
-Next, we cluster and plot. But many many times.
-
-```{r}
 library(FlowSOM)
 library(pheatmap)
 library(magick)
+library(cytofkit) # Can't get fastphenograph to work
 
 FlowSom <- function(dat, num_mc = 30) {
   input <- FlowSOM::ReadInput(as.matrix(dat))
@@ -58,14 +12,21 @@ FlowSom <- function(dat, num_mc = 30) {
 }
 
 PhenoGraph <- function(dat, k = 30) {
-  # TODO
+  clust_percell <- cytofkit::cytof_cluster(xdata = as.matrix(dat), 
+                                           method = "Rphenograph", 
+                                           Rphenograph_k = k)
   return(clust_percell)
 }
 
-# TODO add phenograph
-MakePlots <- function(dat, num_iter = 50, num_mc = num_mc, k = k) {
+MakePlots <- function(dat, num_iter = 50, num_mc = num_mc, pg_k = 30, method = "FlowSOM") {
   for(i in seq(num_iter)) {
-    mc_cells <- FlowSom(dat, num_mc = num_mc)
+    
+    if(method == "FlowSOM") {
+      mc_cells <- FlowSom(dat, num_mc = num_mc)
+    } else {
+      mc_cells <- PhenoGraph(dat, k = pg_k)
+    }
+    
     clust <- unique(mc_cells)
     
     tmp <- bind_cols(umap, cluster = mc_cells)
@@ -89,15 +50,15 @@ MakePlots <- function(dat, num_iter = 50, num_mc = num_mc, k = k) {
 }
 
 ImageDistance <- function(im1, im2, metric = "MSE") {
-    return(magick::image_compare_dist(image = im1, reference_image = im2, metric = 'RMSE')$distortion)
+  return(magick::image_compare_dist(image = im1, reference_image = im2, metric = 'RMSE')$distortion)
 }
 
 MakeGif <- function(fps = 5, outfile = "ordered_images.gif") {
   files <- list.files()
-
+  
   # Create a list to store the images, make them smaller
   images <- lapply(files, function(i) {
-      result <- image_read(i) %>% image_scale('10%')
+    result <- image_read(i) %>% image_scale('10%')
   })
   
   # Create an empty matrix to store the distances
@@ -125,37 +86,19 @@ MakeGif <- function(fps = 5, outfile = "ordered_images.gif") {
   
   # Read in files in this order
   img_list <- lapply(imgs, function(i) {
-      magick::image_read(i) %>% magick::image_scale('50%')
+    magick::image_read(i) %>% magick::image_scale('50%')
   })
-
+  
   ## join the images together
   img_joined <- image_join(img_list)
-
+  
   ## animate at 2 frames per second
   img_animated <- image_animate(img_joined, fps)
   
   ## Set outfile
   outfile <- paste0(getwd(), "/", outfile)
-
+  
   ## save to disk
   image_write(image = img_animated,
-          path = outfile)
-}
-```
-
-Now we plug and chug.
-
-```{r}
-setwd(here::here("output", "second_pass", "test"))
-num_iter <- 3
-num_mc <- 40
-
-MakePlots(dat = surface, num_iter = num_iter, num_mc = num_mc)
-MakeGif(fps = 5)
-```
-
-
-
-
-
-
+              path = outfile)
+} 
